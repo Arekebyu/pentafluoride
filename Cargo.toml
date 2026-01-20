@@ -1,0 +1,15 @@
+[package]
+name = "pentafluoride"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ahash = "0.8.12"
+enum-map = "2.7.3"
+enumset = "1.1.10"
+puffin = "0.19.1"
+puffin_http = "0.16.1"
+rand = "0.9.2"
+serde = {version = "1.0.228", features = ["derive"]}
+serde_json = "1.0.149"
+tch = "0.22.0"
