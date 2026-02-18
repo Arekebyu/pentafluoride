@@ -1,8 +1,12 @@
 use enumset::EnumSet;
-use pentafluoride::mcts::{self, mcts_search};
+use pyo3::prelude::*;
 
-use pentafluoride::data::*;
+use crate::data::*;
+use crate::mcts::mcts_search;
+#[macro_use]
 mod data;
+mod mcts;
+mod movegen;
 
 fn main() {
     let server_addr = format!("127.0.0.1:{}", puffin_http::DEFAULT_PORT);
@@ -17,6 +21,5 @@ fn main() {
         combo: 0,
     };
     let queue = vec![Piece::L, Piece::J, Piece::O, Piece::T, Piece::S];
-    print!("{:?}", mcts_search(root, queue, 5000));
     puffin::GlobalProfiler::lock().new_frame()
 }

@@ -1,35 +1,52 @@
+use std::vec;
+
 // modified from ColdClear 2 by MinusKelvin
 use enum_map::Enum;
 use enumset::{EnumSet, EnumSetType};
+use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 
+#[pyclass]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Deserialize)]
 pub struct Board {
     pub cols: [u64; 10],
 }
 
+#[pyclass]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GameState {
+    #[pyo3(get, set)]
     pub board: Board,
     pub bag: EnumSet<Piece>,
+    #[pyo3(get, set)]
     pub hold: Piece,
+    #[pyo3(get, set)]
     pub b2b: u32,
+    #[pyo3(get, set)]
     pub combo: u8,
 }
 
+#[pyclass]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PieceLocation {
     #[serde(rename = "type")]
+    #[pyo3(get, set)]
     pub piece: Piece,
     #[serde(rename = "orientation")]
+    #[pyo3(get, set)]
     pub rotation: Rotation,
+    #[pyo3(get, set)]
     pub x: i8,
+    #[pyo3(get, set)]
     pub y: i8,
 }
 
+#[pyclass]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Placement {
+    #[pyo3(get, set)]
     pub location: PieceLocation,
+    #[pyo3(get, set)]
     pub spin: Spin,
 }
 
@@ -43,6 +60,7 @@ pub struct PlacementInfo {
 }
 
 #[allow(clippy::derive_hash_xor_eq)]
+#[pyclass]
 #[derive(EnumSetType, Enum, Debug, Hash, Serialize, Deserialize)]
 pub enum Piece {
     I,
@@ -54,6 +72,7 @@ pub enum Piece {
     Z,
 }
 
+#[pyclass]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Rotation {
@@ -63,6 +82,7 @@ pub enum Rotation {
     East,
 }
 
+#[pyclass]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Spin {
@@ -318,6 +338,20 @@ impl GameState {
             combo: self.combo as u32,
             b2b,
             pc,
+        }
+    }
+}
+
+#[pymethods]
+impl GameState {
+    #[new]
+    pub fn gamestate(board: [u64; 10], hold: Piece, b2b: u32, combo: u8) -> Self {
+        Self {
+            board: Board { cols: board },
+            bag: EnumSet::all(),
+            hold,
+            b2b,
+            combo,
         }
     }
 }

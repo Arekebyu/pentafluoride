@@ -1,35 +1,39 @@
 use crate::data::*;
 use crate::movegen::find_moves;
-use enumset::__internal::set::new;
+use pyo3::prelude::*;
 use rand::seq::IndexedRandom;
-use std::cmp::{Ordering, max, min};
 use std::collections::HashMap;
-use std::f32::consts::{LOG10_E, SQRT_2};
-use std::{array, clone, vec};
+use std::vec;
 
 pub struct MCTS {
     nodes: Vec<Node>,
+    evaluator: Py<PyAny>,
 }
 #[derive(Clone)]
 pub struct Node {
     parent: Option<usize>,
-    children: HashMap<Placement, usize>,
+    children: HashMap<Placement, (f32, usize)>, // placement -> (policy, index)
     queue: Vec<Piece>,
 
     visits: usize,
     total_score: f32,
-    prior_prob: f32,
 
     state: GameState,
-    expanded: bool,
 
     // for regularizing rewards
     min_score: f32,
     max_score: f32,
 }
 
-pub fn mcts_search(root: GameState, queue: Vec<Piece>, iteration: usize) -> Placement {
-    let mut tree = MCTS::new(root, queue);
+#[pyfunction]
+pub fn mcts_search(
+    py: Python<'_>,
+    root: GameState,
+    queue: Vec<Piece>,
+    iteration: usize,
+    evaluator: Py<PyAny>,
+) -> Placement {
+    let mut tree = MCTS::new(root, queue, evaluator);
 
     for _ in 0..iteration {
         let mut node_idx = 0;
@@ -52,7 +56,7 @@ pub fn mcts_search(root: GameState, queue: Vec<Piece>, iteration: usize) -> Plac
         }
 
         // 2. Expansion & 3. Simulation: Create a new node and get its initial reward
-        let reward = if let Some((new_node_idx, r)) = tree.expand(node_idx) {
+        let reward = if let Some((new_node_idx, r)) = tree.expand(py, node_idx) {
             path.push(new_node_idx);
             r
         } else {
@@ -67,23 +71,26 @@ pub fn mcts_search(root: GameState, queue: Vec<Piece>, iteration: usize) -> Plac
     }
 
     // Choose the best move based on the most visited child of the root
-    tree.nodes[0]
+    *tree.nodes[0]
         .children
         .iter()
-        .max_by_key(|&(_, idx)| tree.nodes[*idx].visits)
-        .map(|(&p, _)| p)
+        .max_by_key(|&(_, &idx)| tree.nodes[idx.1].visits)
+        .map(|(k, _)| k)
         .expect("MCTS failed to find any valid moves")
 }
 
 impl MCTS {
-    pub fn new(root: GameState, queue: Vec<Piece>) -> Self {
+    pub fn new(root: GameState, queue: Vec<Piece>, evaluator: Py<PyAny>) -> Self {
         // we make some assumptions here, namely, root gamestate already has hold piece
         let root = Node::new(root, queue);
-        return Self { nodes: vec![root] };
+        Self {
+            nodes: vec![root],
+            evaluator,
+        }
     }
 
     fn select(&self, node_id: usize) -> Option<usize> {
-        const EXPLORATION: f32 = SQRT_2;
+        const C_PUCT: f32 = 1.0;
         let cur = self
             .nodes
             .get(node_id)
@@ -98,15 +105,16 @@ impl MCTS {
         let mut best = f32::MIN;
         let mut node = None;
 
-        for (_, &child_id) in &cur.children {
+        for (&_placement, &(prior_prob, child_id)) in &cur.children {
             let child = self
                 .nodes
                 .get(child_id)
                 .expect("reference to nonexistent node in arena in select");
-            let exploitation = (child.value() - cur.min_score) / denom;
-            let exploration =
-                EXPLORATION * f32::sqrt((cur.visits as f32).ln() / child.visits as f32);
-            let score = exploitation + exploration;
+
+            let q_value = (child.value() - cur.min_score) / denom;
+            let u_value =
+                C_PUCT * prior_prob * (cur.visits as f32).sqrt() / (1.0 + child.visits as f32);
+            let score = q_value + u_value;
             if score > best {
                 node = Some(child_id);
                 best = score;
@@ -116,7 +124,7 @@ impl MCTS {
         return node;
     }
 
-    fn expand(&mut self, node_id: usize) -> Option<(usize, f32)> {
+    fn expand(&mut self, py: Python<'_>, node_id: usize) -> Option<(usize, f32)> {
         let actions = self.nodes[node_id].actions();
         let unexpanded: Vec<_> = actions
             .into_iter()
@@ -125,9 +133,9 @@ impl MCTS {
 
         let (placement, _) = *unexpanded.choose(&mut rand::rng())?;
 
-        let mut newState = self.nodes[node_id].state;
+        let mut new_state = self.nodes[node_id].state;
         let piece = *self.nodes[node_id].queue.first().unwrap_or(&Piece::O);
-        let reward = calculate_reward(&newState.advance(piece, placement));
+        let _info = new_state.advance(piece, placement);
 
         let next_queue = if self.nodes[node_id].queue.is_empty() {
             vec![]
@@ -135,13 +143,21 @@ impl MCTS {
             self.nodes[node_id].queue[1..].to_vec()
         };
 
+        let eval_result = self
+            .evaluator
+            .call1(py, (new_state, next_queue.clone()))
+            .ok()?;
+        let (policy_score, quality_score): (f32, f32) = eval_result.extract(py).ok()?;
+
         let child_index = self.nodes.len();
-        let mut child = Node::new(newState, next_queue);
+        let mut child = Node::new(new_state, next_queue);
         child.parent = Some(node_id);
 
-        self.nodes[node_id].children.insert(placement, child_index);
+        self.nodes[node_id]
+            .children // The key for children is `Placement`, not a tuple.
+            .insert(placement, (policy_score, child_index));
         self.nodes.push(child);
-        return Some((child_index, reward));
+        return Some((child_index, quality_score));
     }
     fn update(&mut self, reward: f32, idx: usize) {
         let child = self.nodes.get_mut(idx).expect("bad child index in update");
@@ -168,10 +184,8 @@ impl Node {
 
             visits: 0,
             total_score: 0.0,
-            prior_prob: 0.0,
 
             state,
-            expanded: false,
 
             min_score: f32::INFINITY,
             max_score: f32::NEG_INFINITY,
@@ -208,7 +222,7 @@ macro_rules! apply_combo {
 fn calculate_reward(info: &PlacementInfo) -> f32 {
     // this is so ugly lol
     let mut r = 0.0f32;
-    let C0_ATTACK: [f32; 21] = apply_combo!(val => (1.0f32 + 1.25f32 * val).ln());
+    let c0_attack: [f32; 21] = apply_combo!(val => (1.0f32 + 1.25f32 * val).ln());
     if info.placement.spin == Spin::Full {
         r += 2.0 * info.lines_cleared as f32;
     } else {
@@ -223,7 +237,7 @@ fn calculate_reward(info: &PlacementInfo) -> f32 {
         r += 1.0;
     }
     if info.lines_cleared == 0 {
-        r += C0_ATTACK[info.combo as usize];
+        r += c0_attack[info.combo as usize];
     } else {
         r *= 1.0 + 0.25 * info.combo as f32 // might want to quantize this reward
     }
