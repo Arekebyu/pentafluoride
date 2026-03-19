@@ -9,4 +9,6 @@ if __name__ == "__main__":
     )
     queue = [pentafluoride.Piece.L, pentafluoride.Piece.J, pentafluoride.Piece.O, pentafluoride.Piece.T, pentafluoride.Piece.S]
     evaluator = lambda s, q: (1.0, 0.0)
-    print(pentafluoride.mcts_search(root, queue, 5000, evaluator))
+    # placement = pentafluoride.mcts_search(root, queue, 200, evaluator)
+    # print(placement.spin, placement.location.x, placement.location.y, placement.location.rotation, placement.location.piece)
+    print(pentafluoride.Piece.L.value)

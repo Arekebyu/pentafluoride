@@ -13,7 +13,10 @@ fn pentafluoride(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<data::Piece>()?;
     m.add_class::<data::PieceLocation>()?;
     m.add_class::<data::Placement>()?;
+    m.add_class::<data::PlacementInfo>()?;
     m.add_class::<data::Rotation>()?;
     m.add_class::<data::Spin>()?;
+    m.add_function(wrap_pyfunction!(movegen::find_moves, m)?)?;
+    m.add_function(wrap_pyfunction!(mcts::calculate_reward, m)?)?;
     Ok(())
 }

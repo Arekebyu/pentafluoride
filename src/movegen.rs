@@ -2,10 +2,11 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
 use ahash::AHashMap;
+use pyo3::pyfunction;
 
 use crate::data::*;
 
-
+#[pyfunction]
 pub fn find_moves(board: &Board, piece: Piece) -> Vec<(Placement, u32)> {
     puffin::profile_function!();
     let mut queue = BinaryHeap::new();

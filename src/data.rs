@@ -50,6 +50,7 @@ pub struct Placement {
     pub spin: Spin,
 }
 
+#[pyclass]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PlacementInfo {
     pub placement: Placement,
@@ -63,32 +64,32 @@ pub struct PlacementInfo {
 #[pyclass]
 #[derive(EnumSetType, Enum, Debug, Hash, Serialize, Deserialize)]
 pub enum Piece {
-    I,
-    O,
-    T,
-    L,
-    J,
-    S,
-    Z,
+    I = 0,
+    O = 1,
+    T = 2,
+    L = 3,
+    J = 4,
+    S = 5,
+    Z = 6,
 }
 
 #[pyclass]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Rotation {
-    North,
-    West,
-    South,
-    East,
+    North = 0,
+    West = 1,
+    South = 2,
+    East = 3,
 }
 
 #[pyclass]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Spin {
-    None,
-    Mini,
-    Full,
+    None = 0,
+    Mini = 1,
+    Full = 2,
 }
 
 impl Piece {
@@ -303,6 +304,7 @@ impl Board {
     }
 }
 
+#[pymethods]
 impl GameState {
     pub fn advance(&mut self, next: Piece, placement: Placement) -> PlacementInfo {
         self.bag.remove(next);
@@ -340,10 +342,6 @@ impl GameState {
             pc,
         }
     }
-}
-
-#[pymethods]
-impl GameState {
     #[new]
     pub fn gamestate(board: [u64; 10], hold: Piece, b2b: u32, combo: u8) -> Self {
         Self {
@@ -373,4 +371,43 @@ fn clear_lines(col: &mut u64, mut lines: u64) {
         lines &= !(1 << i);
         lines >>= 1;
     }
+}
+
+macro_rules! apply_combo {
+    ($v:ident => $e:expr) => {
+        lutify!(($e) for $v in [0.0,1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0,10.0,11.0,12.0,13.0,14.0,15.0,16.0,17.0,18.0,19.0,20.0])
+    };
+
+}
+#[pyfunction]
+pub fn calculate_reward(info: &PlacementInfo) -> f32 {
+    // this is so ugly lol
+    let mut r = 0.0f32;
+    let c0_attack: [f32; 21] = apply_combo!(val => (1.0f32 + 1.25f32 * val).ln());
+    if info.placement.spin == Spin::Full {
+        r += 2.0 * info.lines_cleared as f32;
+    } else {
+        r += match info.lines_cleared {
+            4 => 4.0,
+            3 => 2.0,
+            2 => 1.0,
+            _ => 0.0,
+        }
+    }
+    if info.b2b > 0 {
+        r += 1.0;
+    }
+    if info.lines_cleared == 0 {
+        r += c0_attack[info.combo as usize];
+    } else {
+        r *= 1.0 + 0.25 * info.combo as f32 // might want to quantize this reward
+    }
+    if info.b2b < -4 {
+        r -= info.b2b as f32
+    }
+    if info.pc {
+        r += 4.0
+    }
+
+    r
 }

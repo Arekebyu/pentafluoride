@@ -17,6 +17,7 @@ pub struct Node {
 
     visits: usize,
     total_score: f32,
+    max_reward: f32,
 
     state: GameState,
 
@@ -136,6 +137,8 @@ impl MCTS {
         let mut new_state = self.nodes[node_id].state;
         let piece = *self.nodes[node_id].queue.first().unwrap_or(&Piece::O);
         let _info = new_state.advance(piece, placement);
+        self.nodes[node_id].max_reward =
+            self.nodes[node_id].max_reward.max(calculate_reward(&_info));
 
         let next_queue = if self.nodes[node_id].queue.is_empty() {
             vec![]
@@ -184,6 +187,7 @@ impl Node {
 
             visits: 0,
             total_score: 0.0,
+            max_reward: 0.0,
 
             state,
 
@@ -210,43 +214,4 @@ impl Node {
             .chain(find_moves(&self.state.board, self.state.hold))
             .collect::<Vec<_>>()
     }
-}
-
-macro_rules! apply_combo {
-    ($v:ident => $e:expr) => {
-        lutify!(($e) for $v in [0.0,1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0,10.0,11.0,12.0,13.0,14.0,15.0,16.0,17.0,18.0,19.0,20.0])
-    };
-
-}
-
-fn calculate_reward(info: &PlacementInfo) -> f32 {
-    // this is so ugly lol
-    let mut r = 0.0f32;
-    let c0_attack: [f32; 21] = apply_combo!(val => (1.0f32 + 1.25f32 * val).ln());
-    if info.placement.spin == Spin::Full {
-        r += 2.0 * info.lines_cleared as f32;
-    } else {
-        r += match info.lines_cleared {
-            4 => 4.0,
-            3 => 2.0,
-            2 => 1.0,
-            _ => 0.0,
-        }
-    }
-    if info.b2b > 0 {
-        r += 1.0;
-    }
-    if info.lines_cleared == 0 {
-        r += c0_attack[info.combo as usize];
-    } else {
-        r *= 1.0 + 0.25 * info.combo as f32 // might want to quantize this reward
-    }
-    if info.b2b < -4 {
-        r -= info.b2b as f32
-    }
-    if info.pc {
-        r += 4.0
-    }
-
-    r
 }
