@@ -14,7 +14,21 @@ class TetrisEnv(gym.Env):
         # 64 next piece actions + 64 hold piece actions = 128 total actions
         self.action_space = spaces.Discrete(128)
         self.observation_space = spaces.Dict({
-            '''state is currently only the board, can add more features later'''
+            '''state has:
+            board: 32 rows x 10 columns, 1 if occupied, 0 if empty
+            the 33rd row is used to encode the following features:
+                b2b status (from 0 to 1, capping out at 1 with b2b of 64 or higher)
+                combo count (from 0 to 1, capping out at 1 with combo of 21)
+                    Might want to make max combo lower to discourage ren strategy
+                
+                Can consider adding
+                - next 4 pieces in the queue (one-hot encoded, 7 types each)
+                - incoming attack (divided by 30 to scale it to 0-1 range, capping out at 30 or higher)
+                - last 4 board states (to give the agent a sense of velocity)
+
+                - opponent board for screenwatching, but might be too difficult to learn
+
+            '''
             "state": spaces.Box(low=0, high=1, shape=(32, 10), dtype=np.uint8),
             '''features are 
             - piece type (7 types)
@@ -77,11 +91,14 @@ class TetrisEnv(gym.Env):
         pass
 
     def _get_obs(self):
-        board = np.zeros((32, 10), dtype=np.uint8)
+        board = np.zeros((33, 10), dtype=np.uint8)
         for x in range(10):
             for y in range(32):
                 if self.game_state.board[x] & (1 << y):
                     board[y][x] = 1
+        # encode b2b and combo in the 33rd row
+        board[32][0] = min(self.game_state.b2b / 64, 1)
+        board[32][1] = min(self.game_state.combo / 21, 1)
         action_features = []
         placements = self.placements
         for p in placements:
