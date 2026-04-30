@@ -8,6 +8,7 @@ pub mod movegen;
 #[pymodule]
 fn pentafluoride(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(mcts::mcts_search, m)?)?;
+    m.add_function(wrap_pyfunction!(mcts::mcts_generate_targets, m)?)?;
     m.add_class::<data::Board>()?;
     m.add_class::<data::GameState>()?;
     m.add_class::<data::Piece>()?;

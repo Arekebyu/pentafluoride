@@ -1,3 +1,6 @@
 /target
 /.venv
 /.vscode
+/checkpoints/*
+*/__pycache__/*
+/ppo_tetris_logs/*

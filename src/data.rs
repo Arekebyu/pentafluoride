@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 #[pyclass]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Deserialize)]
 pub struct Board {
+    #[pyo3(get, set)]
     pub cols: [u64; 10],
 }
 
@@ -54,9 +55,13 @@ pub struct Placement {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PlacementInfo {
     pub placement: Placement,
+    #[pyo3(get, set)]
     pub lines_cleared: u8,
+    #[pyo3(get, set)]
     pub combo: u32,
+    #[pyo3(get, set)]
     pub b2b: i32,
+    #[pyo3(get, set)]
     pub pc: bool,
 }
 
@@ -278,7 +283,7 @@ impl Board {
 
     pub fn distance_to_ground(&self, x: i8, y: i8) -> i8 {
         debug_assert!((0..10).contains(&x));
-        debug_assert!((0..40).contains(&y));
+        debug_assert!((0..64).contains(&y));
         if y == 0 {
             return 0;
         }
@@ -410,4 +415,28 @@ pub fn calculate_reward(info: &PlacementInfo) -> f32 {
     }
 
     r
+}
+
+#[pymethods]
+impl Piece {
+    #[getter]
+    pub fn value(&self) -> u8 {
+        *self as u8
+    }
+}
+
+#[pymethods]
+impl Rotation {
+    #[getter]
+    pub fn value(&self) -> u8 {
+        *self as u8
+    }
+}
+
+#[pymethods]
+impl Spin {
+    #[getter]
+    pub fn value(&self) -> u8 {
+        *self as u8
+    }
 }

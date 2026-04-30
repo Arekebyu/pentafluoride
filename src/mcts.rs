@@ -7,12 +7,13 @@ use std::vec;
 
 pub struct MCTS {
     nodes: Vec<Node>,
-    evaluator: Py<PyAny>,
+    evaluator: Option<Py<PyAny>>,
 }
 #[derive(Clone)]
 pub struct Node {
     parent: Option<usize>,
     children: HashMap<Placement, (f32, usize)>, // placement -> (policy, index)
+    unexpanded_actions: Vec<(Placement, u32)>,
     queue: Vec<Piece>,
 
     visits: usize,
@@ -24,6 +25,7 @@ pub struct Node {
     // for regularizing rewards
     min_score: f32,
     max_score: f32,
+    is_terminal: bool,
 }
 
 #[pyfunction]
@@ -34,7 +36,7 @@ pub fn mcts_search(
     iteration: usize,
     evaluator: Py<PyAny>,
 ) -> Placement {
-    let mut tree = MCTS::new(root, queue, evaluator);
+    let mut tree = MCTS::new(root, queue, Some(evaluator));
 
     for _ in 0..iteration {
         let mut node_idx = 0;
@@ -42,9 +44,11 @@ pub fn mcts_search(
 
         // 1. Selection: Traverse down the tree using the UCB1 policy
         loop {
-            let actions = tree.nodes[node_idx].actions();
             let node = &tree.nodes[node_idx];
-            if !actions.is_empty() && node.children.len() == actions.len() {
+            if node.is_terminal {
+                break;
+            }
+            if node.unexpanded_actions.is_empty() && !node.children.is_empty() {
                 if let Some(next_idx) = tree.select(node_idx) {
                     node_idx = next_idx;
                     path.push(node_idx);
@@ -80,10 +84,78 @@ pub fn mcts_search(
         .expect("MCTS failed to find any valid moves")
 }
 
+fn rollout(mut state: GameState, mut queue: Vec<Piece>) -> f32 {
+    let mut total_reward = 0.0;
+    while !queue.is_empty() {
+        let piece = queue.remove(0);
+        let mut moves = find_moves(&state.board, piece);
+        moves.extend(find_moves(&state.board, state.hold));
+        if moves.is_empty() {
+            break;
+        }
+        let (m, _) = *moves.choose(&mut rand::rng()).unwrap();
+        let info = state.advance(piece, m);
+        total_reward += calculate_reward(&info);
+    }
+    total_reward
+}
+
+#[pyfunction]
+pub fn mcts_generate_targets(
+    py: Python<'_>,
+    root: GameState,
+    queue: Vec<Piece>,
+    iteration: usize,
+) -> Vec<(Placement, f32)> {
+    let mut tree = MCTS::new(root, queue, None);
+
+    for _ in 0..iteration {
+        let mut node_idx = 0;
+        let mut path = vec![node_idx];
+
+        loop {
+            let node = &tree.nodes[node_idx];
+            if node.is_terminal {
+                break;
+            }
+            if node.unexpanded_actions.is_empty() && !node.children.is_empty() {
+                if let Some(next_idx) = tree.select(node_idx) {
+                    node_idx = next_idx;
+                    path.push(node_idx);
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        let reward = if let Some((new_node_idx, r)) = tree.expand(py, node_idx) {
+            path.push(new_node_idx);
+            r
+        } else {
+            tree.nodes[node_idx].value()
+        };
+
+        for &idx in path.iter().rev() {
+            tree.update(reward, idx);
+        }
+    }
+
+    tree.nodes[0]
+        .children
+        .iter()
+        .map(|(&p, &(_, idx))| (p, tree.nodes[idx].value()))
+        .collect()
+}
+
+
 impl MCTS {
-    pub fn new(root: GameState, queue: Vec<Piece>, evaluator: Py<PyAny>) -> Self {
+    pub fn new(root: GameState, queue: Vec<Piece>, evaluator: Option<Py<PyAny>>) -> Self {
         // we make some assumptions here, namely, root gamestate already has hold piece
-        let root = Node::new(root, queue);
+        let mut root = Node::new(root, queue);
+        use rand::seq::SliceRandom;
+        root.unexpanded_actions.shuffle(&mut rand::rng());
         Self {
             nodes: vec![root],
             evaluator,
@@ -126,13 +198,11 @@ impl MCTS {
     }
 
     fn expand(&mut self, py: Python<'_>, node_id: usize) -> Option<(usize, f32)> {
-        let actions = self.nodes[node_id].actions();
-        let unexpanded: Vec<_> = actions
-            .into_iter()
-            .filter(|(p, _)| !self.nodes[node_id].children.contains_key(p))
-            .collect();
+        if self.nodes[node_id].is_terminal || self.nodes[node_id].unexpanded_actions.is_empty() {
+            return None;
+        }
 
-        let (placement, _) = *unexpanded.choose(&mut rand::rng())?;
+        let (placement, _) = self.nodes[node_id].unexpanded_actions.pop()?;
 
         let mut new_state = self.nodes[node_id].state;
         let piece = *self.nodes[node_id].queue.first().unwrap_or(&Piece::O);
@@ -146,15 +216,28 @@ impl MCTS {
             self.nodes[node_id].queue[1..].to_vec()
         };
 
-        let eval_result = self
-            .evaluator
-            .call1(py, (new_state, next_queue.clone()))
-            .ok()?;
-        let (policy_score, quality_score): (f32, f32) = eval_result.extract(py).ok()?;
+        let mut is_terminal = next_queue.is_empty();
+
+        let (policy_score, quality_score) = if let Some(evaluator) = &self.evaluator {
+            let eval_result = evaluator
+                .call1(py, (new_state, next_queue.clone()))
+                .ok()?;
+            eval_result.extract(py).ok()?
+        } else {
+            // Pure rust rollout for generating targets
+            let rollout_reward = rollout(new_state, next_queue.clone());
+            (1.0, rollout_reward) // prior uniform
+        };
 
         let child_index = self.nodes.len();
         let mut child = Node::new(new_state, next_queue);
+        use rand::seq::SliceRandom;
+        child.unexpanded_actions.shuffle(&mut rand::rng());
         child.parent = Some(node_id);
+        if child.unexpanded_actions.is_empty() {
+            is_terminal = true;
+        }
+        child.is_terminal = is_terminal;
 
         self.nodes[node_id]
             .children // The key for children is `Placement`, not a tuple.
@@ -180,9 +263,20 @@ impl MCTS {
 
 impl Node {
     pub fn new(state: GameState, queue: Vec<Piece>) -> Self {
+        let unexpanded_actions = {
+            if let Some(piece) = queue.first() {
+                find_moves(&state.board, *piece)
+            } else {
+                vec![]
+            }
+        }.into_iter().chain(find_moves(&state.board, state.hold)).collect::<Vec<_>>();
+
+        let is_terminal = queue.is_empty() || unexpanded_actions.is_empty();
+
         Node {
             parent: None,
             children: HashMap::new(),
+            unexpanded_actions,
             queue,
 
             visits: 0,
@@ -193,6 +287,7 @@ impl Node {
 
             min_score: f32::INFINITY,
             max_score: f32::NEG_INFINITY,
+            is_terminal,
         }
     }
     fn value(&self) -> f32 {
@@ -200,18 +295,5 @@ impl Node {
             0 => 0.0,
             visits => self.total_score / visits as f32,
         }
-    }
-    fn actions(&self) -> Vec<(Placement, u32)> {
-        let placements = {
-            if let Some(piece) = self.queue.first() {
-                find_moves(&self.state.board, *piece)
-            } else {
-                vec![]
-            }
-        };
-        placements
-            .into_iter()
-            .chain(find_moves(&self.state.board, self.state.hold))
-            .collect::<Vec<_>>()
     }
 }

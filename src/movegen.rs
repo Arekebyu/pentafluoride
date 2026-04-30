@@ -378,10 +378,10 @@ impl CollisionMaps {
     }
 
     fn obstructed(&self, piece: PieceLocation) -> bool {
-        let v = piece.y < 0
+        let v = piece.y < 0 || piece.y >= 60
             || self.boards[piece.rotation as usize]
                 .get(piece.x as usize)
-                .map(|&c| c & 1 << piece.y != 0)
+                .map(|&c| c & 1_u64 << piece.y != 0)
                 .unwrap_or(true);
         v
     }
