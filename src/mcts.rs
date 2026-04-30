@@ -1,54 +1,58 @@
 use crate::data::*;
 use crate::movegen::find_moves;
 use pyo3::prelude::*;
-use rand::seq::IndexedRandom;
 use std::collections::HashMap;
-use std::vec;
 
 pub struct MCTS {
     nodes: Vec<Node>,
-    evaluator: Option<Py<PyAny>>,
+    evaluator: Py<PyAny>,
 }
+
 #[derive(Clone)]
 pub struct Node {
     parent: Option<usize>,
-    children: HashMap<Placement, (f32, usize)>, // placement -> (policy, index)
-    unexpanded_actions: Vec<(Placement, u32)>,
+    children: HashMap<Placement, usize>, // placement -> index
+    
+    // Valid moves and their prior probabilities from the network
+    valid_moves: Vec<(Placement, u32)>,
+    priors: HashMap<Placement, f32>,
+    
     queue: Vec<Piece>,
-
     visits: usize,
-    total_score: f32,
-    max_reward: f32,
-
+    total_value: f32,
     state: GameState,
 
-    // for regularizing rewards
-    min_score: f32,
-    max_score: f32,
     is_terminal: bool,
 }
 
 #[pyfunction]
-pub fn mcts_search(
+pub fn alphago_mcts_search(
     py: Python<'_>,
     root: GameState,
     queue: Vec<Piece>,
     iteration: usize,
     evaluator: Py<PyAny>,
-) -> Placement {
-    let mut tree = MCTS::new(root, queue, Some(evaluator));
+    temperature: f32,
+) -> PyResult<(Placement, HashMap<Placement, f32>)> {
+    let mut tree = MCTS::new(py, root, queue, evaluator.clone_ref(py))?;
 
     for _ in 0..iteration {
         let mut node_idx = 0;
         let mut path = vec![node_idx];
 
-        // 1. Selection: Traverse down the tree using the UCB1 policy
+        // 1. Selection
         loop {
             let node = &tree.nodes[node_idx];
             if node.is_terminal {
                 break;
             }
-            if node.unexpanded_actions.is_empty() && !node.children.is_empty() {
+            
+            // If we have valid moves but not all of them are expanded, we should expand one.
+            // Wait, in AlphaZero, we can add all children at once or lazily.
+            // Usually, selection goes down until it finds a node that hasn't been expanded.
+            if node.children.len() < node.valid_moves.len() {
+                break; 
+            } else if !node.children.is_empty() {
                 if let Some(next_idx) = tree.select(node_idx) {
                     node_idx = next_idx;
                     path.push(node_idx);
@@ -60,155 +64,143 @@ pub fn mcts_search(
             }
         }
 
-        // 2. Expansion & 3. Simulation: Create a new node and get its initial reward
-        let reward = if let Some((new_node_idx, r)) = tree.expand(py, node_idx) {
-            path.push(new_node_idx);
-            r
+        // 2. Expansion & 3. Evaluation
+        let value = if !tree.nodes[node_idx].is_terminal {
+            if let Some((new_node_idx, v)) = tree.expand(py, node_idx)? {
+                path.push(new_node_idx);
+                v
+            } else {
+                tree.nodes[node_idx].value()
+            }
         } else {
-            // If terminal, use the current node's value
+            // Terminal node
             tree.nodes[node_idx].value()
         };
 
-        // 4. Backpropagation: Update statistics for all nodes in the path
+        // 4. Backpropagation
         for &idx in path.iter().rev() {
-            tree.update(reward, idx);
+            tree.update(value, idx);
         }
     }
 
-    // Choose the best move based on the most visited child of the root
-    *tree.nodes[0]
+    // Get the policy from visits
+    let root_node = &tree.nodes[0];
+    let mut policy = HashMap::new();
+    let mut total_visits = 0;
+    
+    for (&placement, &child_idx) in &root_node.children {
+        let child_visits = tree.nodes[child_idx].visits;
+        total_visits += child_visits;
+        policy.insert(placement, child_visits as f32);
+    }
+
+    if total_visits > 0 {
+        for val in policy.values_mut() {
+            if temperature == 0.0 {
+                // Not supported here perfectly, but handled outside usually.
+                *val /= total_visits as f32;
+            } else {
+                // Apply temperature
+                *val = (*val).powf(1.0 / temperature);
+            }
+        }
+        // re-normalize
+        let sum: f32 = policy.values().sum();
+        if sum > 0.0 {
+            for val in policy.values_mut() {
+                *val /= sum;
+            }
+        }
+    }
+
+    // Best move
+    let best_move = *root_node
         .children
         .iter()
-        .max_by_key(|&(_, &idx)| tree.nodes[idx.1].visits)
+        .max_by_key(|&(_, &idx)| tree.nodes[idx].visits)
         .map(|(k, _)| k)
-        .expect("MCTS failed to find any valid moves")
-}
+        .expect("MCTS failed to find any valid moves");
 
-fn rollout(mut state: GameState, mut queue: Vec<Piece>) -> f32 {
-    let mut total_reward = 0.0;
-    while !queue.is_empty() {
-        let piece = queue.remove(0);
-        let mut moves = find_moves(&state.board, piece);
-        moves.extend(find_moves(&state.board, state.hold));
-        if moves.is_empty() {
-            break;
-        }
-        let (m, _) = *moves.choose(&mut rand::rng()).unwrap();
-        let info = state.advance(piece, m);
-        total_reward += calculate_reward(&info);
-    }
-    total_reward
-}
-
-#[pyfunction]
-pub fn mcts_generate_targets(
-    py: Python<'_>,
-    root: GameState,
-    queue: Vec<Piece>,
-    iteration: usize,
-) -> Vec<(Placement, f32)> {
-    let mut tree = MCTS::new(root, queue, None);
-
-    for _ in 0..iteration {
-        let mut node_idx = 0;
-        let mut path = vec![node_idx];
-
-        loop {
-            let node = &tree.nodes[node_idx];
-            if node.is_terminal {
-                break;
-            }
-            if node.unexpanded_actions.is_empty() && !node.children.is_empty() {
-                if let Some(next_idx) = tree.select(node_idx) {
-                    node_idx = next_idx;
-                    path.push(node_idx);
-                } else {
-                    break;
-                }
-            } else {
-                break;
-            }
-        }
-
-        let reward = if let Some((new_node_idx, r)) = tree.expand(py, node_idx) {
-            path.push(new_node_idx);
-            r
-        } else {
-            tree.nodes[node_idx].value()
-        };
-
-        for &idx in path.iter().rev() {
-            tree.update(reward, idx);
-        }
-    }
-
-    tree.nodes[0]
-        .children
-        .iter()
-        .map(|(&p, &(_, idx))| (p, tree.nodes[idx].value()))
-        .collect()
+    Ok((best_move, policy))
 }
 
 
 impl MCTS {
-    pub fn new(root: GameState, queue: Vec<Piece>, evaluator: Option<Py<PyAny>>) -> Self {
-        // we make some assumptions here, namely, root gamestate already has hold piece
-        let mut root = Node::new(root, queue);
-        use rand::seq::SliceRandom;
-        root.unexpanded_actions.shuffle(&mut rand::rng());
-        Self {
+    pub fn new(py: Python<'_>, state: GameState, queue: Vec<Piece>, evaluator: Py<PyAny>) -> PyResult<Self> {
+        let mut root = Node::new(state, queue);
+        
+        // Evaluate root
+        if !root.is_terminal {
+            let placements: Vec<Placement> = root.valid_moves.iter().map(|(p, _)| *p).collect();
+            let eval_result = evaluator.call1(py, (state, root.queue.clone(), placements.clone()))?;
+            let (priors, value): (Vec<f32>, f32) = eval_result.extract(py)?;
+            
+            for (p, prob) in placements.into_iter().zip(priors.into_iter()) {
+                root.priors.insert(p, prob);
+            }
+            root.total_value = value;
+            root.visits = 1;
+        }
+
+        Ok(Self {
             nodes: vec![root],
             evaluator,
-        }
+        })
     }
 
     fn select(&self, node_id: usize) -> Option<usize> {
         const C_PUCT: f32 = 1.0;
-        let cur = self
-            .nodes
-            .get(node_id)
-            .expect("reference to nonexistent node in arena in select");
-        let denom = cur.max_score - cur.min_score;
-        let denom = if denom.abs() < f32::EPSILON {
-            1.0
-        } else {
-            denom
-        };
-
+        let cur = &self.nodes[node_id];
+        
         let mut best = f32::MIN;
-        let mut node = None;
+        let mut best_node = None;
 
-        for (&_placement, &(prior_prob, child_id)) in &cur.children {
-            let child = self
-                .nodes
-                .get(child_id)
-                .expect("reference to nonexistent node in arena in select");
-
-            let q_value = (child.value() - cur.min_score) / denom;
-            let u_value =
-                C_PUCT * prior_prob * (cur.visits as f32).sqrt() / (1.0 + child.visits as f32);
+        for (&placement, &child_id) in &cur.children {
+            let child = &self.nodes[child_id];
+            
+            let prior = cur.priors.get(&placement).copied().unwrap_or(0.0);
+            
+            let q_value = if child.visits > 0 { child.value() } else { 0.0 };
+            let u_value = C_PUCT * prior * (cur.visits as f32).sqrt() / (1.0 + child.visits as f32);
+            
             let score = q_value + u_value;
             if score > best {
-                node = Some(child_id);
+                best_node = Some(child_id);
                 best = score;
             }
         }
 
-        return node;
+        best_node
     }
 
-    fn expand(&mut self, py: Python<'_>, node_id: usize) -> Option<(usize, f32)> {
-        if self.nodes[node_id].is_terminal || self.nodes[node_id].unexpanded_actions.is_empty() {
-            return None;
+    fn expand(&mut self, py: Python<'_>, node_id: usize) -> PyResult<Option<(usize, f32)>> {
+        if self.nodes[node_id].is_terminal {
+            return Ok(None);
         }
 
-        let (placement, _) = self.nodes[node_id].unexpanded_actions.pop()?;
+        // Find an unexpanded action
+        let mut expanded_action = None;
+        let mut soft_drops = 0;
+        
+        for (p, sd) in &self.nodes[node_id].valid_moves {
+            if !self.nodes[node_id].children.contains_key(p) {
+                expanded_action = Some(*p);
+                soft_drops = *sd;
+                break;
+            }
+        }
+
+        let placement = match expanded_action {
+            Some(p) => p,
+            None => return Ok(None),
+        };
 
         let mut new_state = self.nodes[node_id].state;
         let piece = *self.nodes[node_id].queue.first().unwrap_or(&Piece::O);
-        let _info = new_state.advance(piece, placement);
-        self.nodes[node_id].max_reward =
-            self.nodes[node_id].max_reward.max(calculate_reward(&_info));
+        let info = new_state.advance(piece, placement);
+        
+        // reward from this step
+        let step_reward = calculate_reward(&info);
 
         let next_queue = if self.nodes[node_id].queue.is_empty() {
             vec![]
@@ -216,54 +208,42 @@ impl MCTS {
             self.nodes[node_id].queue[1..].to_vec()
         };
 
-        let mut is_terminal = next_queue.is_empty();
+        let mut child = Node::new(new_state, next_queue);
+        child.parent = Some(node_id);
 
-        let (policy_score, quality_score) = if let Some(evaluator) = &self.evaluator {
-            let eval_result = evaluator
-                .call1(py, (new_state, next_queue.clone()))
-                .ok()?;
-            eval_result.extract(py).ok()?
+        let value = if child.is_terminal {
+            0.0 // or terminal reward
         } else {
-            // Pure rust rollout for generating targets
-            let rollout_reward = rollout(new_state, next_queue.clone());
-            (1.0, rollout_reward) // prior uniform
+            let placements: Vec<Placement> = child.valid_moves.iter().map(|(p, _)| *p).collect();
+            let eval_result = self.evaluator.call1(py, (new_state, child.queue.clone(), placements.clone()))?;
+            let (priors, network_value): (Vec<f32>, f32) = eval_result.extract(py)?;
+            
+            for (p, prob) in placements.into_iter().zip(priors.into_iter()) {
+                child.priors.insert(p, prob);
+            }
+            network_value
         };
 
-        let child_index = self.nodes.len();
-        let mut child = Node::new(new_state, next_queue);
-        use rand::seq::SliceRandom;
-        child.unexpanded_actions.shuffle(&mut rand::rng());
-        child.parent = Some(node_id);
-        if child.unexpanded_actions.is_empty() {
-            is_terminal = true;
-        }
-        child.is_terminal = is_terminal;
+        // The backpropagated value is step_reward + gamma * value
+        let q_value = step_reward + 0.99 * value;
 
-        self.nodes[node_id]
-            .children // The key for children is `Placement`, not a tuple.
-            .insert(placement, (policy_score, child_index));
+        let child_index = self.nodes.len();
+        self.nodes[node_id].children.insert(placement, child_index);
         self.nodes.push(child);
-        return Some((child_index, quality_score));
+
+        Ok(Some((child_index, q_value)))
     }
-    fn update(&mut self, reward: f32, idx: usize) {
-        let child = self.nodes.get_mut(idx).expect("bad child index in update");
+
+    fn update(&mut self, value: f32, idx: usize) {
+        let child = &mut self.nodes[idx];
         child.visits += 1;
-        child.total_score += reward;
-        let child_value = child.value();
-        if let Some(parent) = self.nodes.get(idx).expect("bad index in update").parent {
-            let parent = self
-                .nodes
-                .get_mut(parent)
-                .expect("bad parent index in update");
-            parent.min_score = parent.min_score.min(child_value);
-            parent.max_score = parent.max_score.max(child_value);
-        }
+        child.total_value += value;
     }
 }
 
 impl Node {
     pub fn new(state: GameState, queue: Vec<Piece>) -> Self {
-        let unexpanded_actions = {
+        let valid_moves = {
             if let Some(piece) = queue.first() {
                 find_moves(&state.board, *piece)
             } else {
@@ -271,29 +251,27 @@ impl Node {
             }
         }.into_iter().chain(find_moves(&state.board, state.hold)).collect::<Vec<_>>();
 
-        let is_terminal = queue.is_empty() || unexpanded_actions.is_empty();
+        let is_terminal = queue.is_empty() || valid_moves.is_empty();
 
         Node {
             parent: None,
             children: HashMap::new(),
-            unexpanded_actions,
+            valid_moves,
+            priors: HashMap::new(),
             queue,
 
             visits: 0,
-            total_score: 0.0,
-            max_reward: 0.0,
-
+            total_value: 0.0,
             state,
 
-            min_score: f32::INFINITY,
-            max_score: f32::NEG_INFINITY,
             is_terminal,
         }
     }
     fn value(&self) -> f32 {
-        match self.visits {
-            0 => 0.0,
-            visits => self.total_score / visits as f32,
+        if self.visits == 0 {
+            0.0
+        } else {
+            self.total_value / self.visits as f32
         }
     }
 }

@@ -323,6 +323,7 @@ impl GameState {
         let cleared_mask = self.board.line_clears();
         let mut b2b = self.b2b as i32;
         let mut pc = false;
+        let prev_combo = self.combo;
         if cleared_mask != 0 {
             self.board.remove_lines(cleared_mask);
             let hard = cleared_mask.count_ones() == 4 || !matches!(placement.spin, Spin::None);
@@ -336,13 +337,14 @@ impl GameState {
             } else {
                 b2b += 1;
             }
+            self.combo += 1;
         } else {
             self.combo = 0;
         }
         PlacementInfo {
             placement,
             lines_cleared: cleared_mask.count_ones() as u8,
-            combo: self.combo as u32,
+            combo: prev_combo as u32,
             b2b,
             pc,
         }
@@ -378,42 +380,59 @@ fn clear_lines(col: &mut u64, mut lines: u64) {
     }
 }
 
-macro_rules! apply_combo {
-    ($v:ident => $e:expr) => {
-        lutify!(($e) for $v in [0.0,1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0,10.0,11.0,12.0,13.0,14.0,15.0,16.0,17.0,18.0,19.0,20.0])
-    };
-
-}
 #[pyfunction]
 pub fn calculate_reward(info: &PlacementInfo) -> f32 {
-    // this is so ugly lol
-    let mut r = 0.0f32;
-    let c0_attack: [f32; 21] = apply_combo!(val => (1.0f32 + 1.25f32 * val).ln());
-    if info.placement.spin == Spin::Full {
-        r += 2.0 * info.lines_cleared as f32;
+    let mut r = 0.0;
+    let lines = info.lines_cleared;
+    let spin = info.placement.spin;
+    
+    let is_difficult = lines == 4 || (lines > 0 && spin != Spin::None);
+    
+    let mut base = 0.0;
+    if spin == Spin::Full {
+        base += match lines {
+            0 => 4.0,   // T-Spin
+            1 => 8.0,   // T-Spin Single
+            2 => 12.0,  // T-Spin Double
+            3 => 16.0,  // T-Spin Triple
+            _ => 4.0,
+        };
+    } else if spin == Spin::Mini {
+        base += match lines {
+            0 => 1.0,   // Mini T-Spin
+            1 => 2.0,   // Mini T-Spin Single
+            _ => 1.0,
+        };
     } else {
-        r += match info.lines_cleared {
-            4 => 4.0,
-            3 => 2.0,
-            2 => 1.0,
+        base += match lines {
+            1 => 1.0,   // Single
+            2 => 3.0,   // Double
+            3 => 5.0,   // Triple
+            4 => 8.0,   // Tetris
             _ => 0.0,
-        }
+        };
     }
-    if info.b2b > 0 {
-        r += 1.0;
+    
+    // B2B Bonus: +50% to difficult line clears (if b2b > 1)
+    if is_difficult && info.b2b > 1 {
+        base *= 1.5;
     }
-    if info.lines_cleared == 0 {
-        r += c0_attack[info.combo as usize];
-    } else {
-        r *= 1.0 + 0.25 * info.combo as f32 // might want to quantize this reward
-    }
-    if info.b2b < -4 {
-        r -= info.b2b as f32
-    }
+    r += base;
+    
+    // Perfect Clear
     if info.pc {
-        r += 4.0
+        r += 30.0;
     }
-
+    
+    // Combos: +(0.5 * current combo)
+    if lines > 0 && info.combo > 0 {
+        r += 0.5 * (info.combo as f32);
+    }
+    
+    // Lower board state bonus
+    let y = info.placement.location.y as f32;
+    r += 0.01 * (20.0 - y);
+    
     r
 }
 

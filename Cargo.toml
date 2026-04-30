@@ -16,7 +16,11 @@ once_cell = "1.19.0"
 ort = { version = "2.0.0-rc.11", feautres = ["load_dynamic"]}
 ndarray = "0.17.2"
 pyo3 = { version = "0.28.1", features = ["extension-module"] }
+pprof = { version = "0.15.0", features = ["flamegraph"] }
 
 [lib]
 name = "pentafluoride"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+debug = true
