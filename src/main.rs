@@ -1,25 +1,28 @@
 use enumset::EnumSet;
-use pyo3::prelude::*;
 
 use crate::data::*;
-use crate::mcts::mcts_search;
 #[macro_use]
 mod data;
-mod mcts;
 mod movegen;
+use pentafluoride::interface::run;
 
 fn main() {
-    let server_addr = format!("127.0.0.1:{}", puffin_http::DEFAULT_PORT);
-    let _puffin_server = puffin_http::Server::new(&server_addr).unwrap();
-    eprintln!("Run this to view profiling data:  puffin_viewer {server_addr}");
-    puffin::set_scopes_on(true);
-    let root = GameState {
-        board: Board { cols: [0; 10] },
-        bag: EnumSet::all(),
-        hold: Piece::I,
-        b2b: 0,
-        combo: 0,
-    };
-    let queue = vec![Piece::L, Piece::J, Piece::O, Piece::T, Piece::S];
-    puffin::GlobalProfiler::lock().new_frame()
+    let incoming = futures::stream::repeat_with(|| {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap()
+    });
+
+    let outgoing = futures::sink::unfold((), |_, msg| {
+        serde_json::to_writer(std::io::stdout(), &msg).unwrap();
+        println!();
+        use std::io::Write;
+        std::io::stdout().flush().unwrap();
+        async { Ok(()) }
+    });
+
+    futures::pin_mut!(incoming);
+    futures::pin_mut!(outgoing);
+
+    futures::executor::block_on(run(incoming, outgoing));
 }

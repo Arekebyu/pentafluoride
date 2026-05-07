@@ -2,11 +2,9 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
 use ahash::AHashMap;
-use pyo3::pyfunction;
 
 use crate::data::*;
 
-#[pyfunction]
 pub fn find_moves(board: &Board, piece: Piece) -> Vec<(Placement, u32)> {
     puffin::profile_function!();
     let mut queue = BinaryHeap::new();
@@ -52,9 +50,9 @@ pub fn find_moves(board: &Board, piece: Piece) -> Vec<(Placement, u32)> {
                 if let Some(mv) = rotate_cw(location, &collision_map, board) {
                     update_position(mv, distance as u32);
                 }
-                if let Some(mv) = rotate_ccw(location, &collision_map, board) {
-                    update_position(mv, distance as u32);
-                }
+                // if let Some(mv) = rotate_ccw(location, &collision_map, board) {
+                //     update_position(mv, distance as u32);
+                // }
                 if let Some(mv) = rotate_flip(location, &collision_map, board) {
                     update_position(mv, distance as u32);
                 }
@@ -127,9 +125,9 @@ pub fn find_moves(board: &Board, piece: Piece) -> Vec<(Placement, u32)> {
         if let Some(mv) = rotate_cw(expand.mv.location, &collision_map, board) {
             update_position(mv, expand.soft_drops);
         }
-        if let Some(mv) = rotate_ccw(expand.mv.location, &collision_map, board) {
-            update_position(mv, expand.soft_drops);
-        }
+        // if let Some(mv) = rotate_ccw(expand.mv.location, &collision_map, board) {
+        //     update_position(mv, expand.soft_drops);
+        // }
         if let Some(mv) = rotate_flip(expand.mv.location, &collision_map, board) {
             update_position(mv, expand.soft_drops);
         }
@@ -195,29 +193,29 @@ fn rotate_cw(
     )
 }
 
-fn rotate_ccw(
-    from: PieceLocation,
-    collision_map: &CollisionMaps,
-    board: &Board,
-) -> Option<Placement> {
-    if from.piece == Piece::O {
-        return None;
-    }
-    const KICKS: [[[(i8, i8); 5]; 4]; 7] =
-        piece_lut!(piece => rotation_lut!(rotation => kicks(piece, rotation, rotation.ccw())));
-    let unkicked = PieceLocation {
-        rotation: from.rotation.ccw(),
-        ..from
-    };
-    rotate(
-        unkicked,
-        collision_map,
-        board,
-        KICKS[from.piece as usize][from.rotation as usize]
-            .iter()
-            .copied(),
-    )
-}
+// fn rotate_ccw(
+//     from: PieceLocation,
+//     collision_map: &CollisionMaps,
+//     board: &Board,
+// ) -> Option<Placement> {
+//     if from.piece == Piece::O {
+//         return None;
+//     }
+//     const KICKS: [[[(i8, i8); 5]; 4]; 7] =
+//         piece_lut!(piece => rotation_lut!(rotation => kicks(piece, rotation, rotation.ccw())));
+//     let unkicked = PieceLocation {
+//         rotation: from.rotation.ccw(),
+//         ..from
+//     };
+//     rotate(
+//         unkicked,
+//         collision_map,
+//         board,
+//         KICKS[from.piece as usize][from.rotation as usize]
+//             .iter()
+//             .copied(),
+//     )
+// }
 
 fn rotate_flip(
     from: PieceLocation,
@@ -378,7 +376,8 @@ impl CollisionMaps {
     }
 
     fn obstructed(&self, piece: PieceLocation) -> bool {
-        let v = piece.y < 0 || piece.y >= 60
+        let v = piece.y < 0
+            || piece.y >= 60
             || self.boards[piece.rotation as usize]
                 .get(piece.x as usize)
                 .map(|&c| c & 1_u64 << piece.y != 0)

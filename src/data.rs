@@ -3,70 +3,48 @@ use std::vec;
 // modified from ColdClear 2 by MinusKelvin
 use enum_map::Enum;
 use enumset::{EnumSet, EnumSetType};
-use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 
-#[pyclass]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Board {
-    #[pyo3(get, set)]
     pub cols: [u64; 10],
 }
 
-#[pyclass]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct GameState {
-    #[pyo3(get, set)]
     pub board: Board,
     pub bag: EnumSet<Piece>,
-    #[pyo3(get, set)]
     pub hold: Piece,
-    #[pyo3(get, set)]
     pub b2b: u32,
-    #[pyo3(get, set)]
     pub combo: u8,
 }
 
-#[pyclass]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PieceLocation {
     #[serde(rename = "type")]
-    #[pyo3(get, set)]
     pub piece: Piece,
     #[serde(rename = "orientation")]
-    #[pyo3(get, set)]
     pub rotation: Rotation,
-    #[pyo3(get, set)]
     pub x: i8,
-    #[pyo3(get, set)]
     pub y: i8,
 }
 
-#[pyclass]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Placement {
-    #[pyo3(get, set)]
     pub location: PieceLocation,
-    #[pyo3(get, set)]
     pub spin: Spin,
 }
 
-#[pyclass]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PlacementInfo {
     pub placement: Placement,
-    #[pyo3(get, set)]
     pub lines_cleared: u8,
-    #[pyo3(get, set)]
     pub combo: u32,
-    #[pyo3(get, set)]
     pub b2b: i32,
-    #[pyo3(get, set)]
     pub pc: bool,
 }
 
 #[allow(clippy::derive_hash_xor_eq)]
-#[pyclass]
 #[derive(EnumSetType, Enum, Debug, Hash, Serialize, Deserialize)]
 pub enum Piece {
     I = 0,
@@ -78,7 +56,6 @@ pub enum Piece {
     Z = 6,
 }
 
-#[pyclass]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Rotation {
@@ -88,7 +65,6 @@ pub enum Rotation {
     East = 3,
 }
 
-#[pyclass]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Spin {
@@ -309,7 +285,6 @@ impl Board {
     }
 }
 
-#[pymethods]
 impl GameState {
     pub fn advance(&mut self, next: Piece, placement: Placement) -> PlacementInfo {
         self.bag.remove(next);
@@ -349,16 +324,6 @@ impl GameState {
             pc,
         }
     }
-    #[new]
-    pub fn gamestate(board: [u64; 10], hold: Piece, b2b: u32, combo: u8) -> Self {
-        Self {
-            board: Board { cols: board },
-            bag: EnumSet::all(),
-            hold,
-            b2b,
-            combo,
-        }
-    }
 }
 
 #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
@@ -380,82 +345,57 @@ fn clear_lines(col: &mut u64, mut lines: u64) {
     }
 }
 
-#[pyfunction]
 pub fn calculate_reward(info: &PlacementInfo) -> f32 {
     let mut r = 0.0;
     let lines = info.lines_cleared;
     let spin = info.placement.spin;
-    
+
     let is_difficult = lines == 4 || (lines > 0 && spin != Spin::None);
-    
+
     let mut base = 0.0;
     if spin == Spin::Full {
         base += match lines {
-            0 => 4.0,   // T-Spin
-            1 => 8.0,   // T-Spin Single
-            2 => 12.0,  // T-Spin Double
-            3 => 16.0,  // T-Spin Triple
+            0 => 4.0,  // T-Spin
+            1 => 8.0,  // T-Spin Single
+            2 => 12.0, // T-Spin Double
+            3 => 16.0, // T-Spin Triple
             _ => 4.0,
         };
     } else if spin == Spin::Mini {
         base += match lines {
-            0 => 1.0,   // Mini T-Spin
-            1 => 2.0,   // Mini T-Spin Single
+            0 => 1.0, // Mini T-Spin
+            1 => 2.0, // Mini T-Spin Single
             _ => 1.0,
         };
     } else {
         base += match lines {
-            1 => 1.0,   // Single
-            2 => 3.0,   // Double
-            3 => 5.0,   // Triple
-            4 => 8.0,   // Tetris
+            1 => 1.0, // Single
+            2 => 3.0, // Double
+            3 => 5.0, // Triple
+            4 => 8.0, // Tetris
             _ => 0.0,
         };
     }
-    
+
     // B2B Bonus: +50% to difficult line clears (if b2b > 1)
     if is_difficult && info.b2b > 1 {
         base *= 1.5;
     }
     r += base;
-    
+
     // Perfect Clear
     if info.pc {
         r += 30.0;
     }
-    
+
     // Combos: +(0.5 * current combo)
     if lines > 0 && info.combo > 0 {
         r += 0.5 * (info.combo as f32);
     }
-    
+
     // Lower board state bonus
     let y = info.placement.location.y as f32;
     r += 0.01 * (20.0 - y);
-    
+
     r
-}
-
-#[pymethods]
-impl Piece {
-    #[getter]
-    pub fn value(&self) -> u8 {
-        *self as u8
-    }
-}
-
-#[pymethods]
-impl Rotation {
-    #[getter]
-    pub fn value(&self) -> u8 {
-        *self as u8
-    }
-}
-
-#[pymethods]
-impl Spin {
-    #[getter]
-    pub fn value(&self) -> u8 {
-        *self as u8
-    }
 }
