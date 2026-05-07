@@ -7,6 +7,10 @@ mod movegen;
 use pentafluoride::interface::run;
 
 fn main() {
+    puffin::set_scopes_on(true);
+    let _puffin_server =
+        puffin_http::Server::new(&format!("0.0.0.0:{}", puffin_http::DEFAULT_PORT));
+
     let incoming = futures::stream::repeat_with(|| {
         let mut line = String::new();
         std::io::stdin().read_line(&mut line).unwrap();

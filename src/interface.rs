@@ -93,14 +93,12 @@ pub async fn run(
                 }
             }
             IncomingMessage::Advance { mv } => {
+                puffin::GlobalProfiler::lock().new_frame();
                 if let Some(state) = bot.write_op_if_exists(|bot| {
                     bot.advance(mv);
                     bot.state()
                 }) {
-                    outgoing
-                        .send(OutgoingMessage::State(state))
-                        .await
-                        .unwrap();
+                    outgoing.send(OutgoingMessage::State(state)).await.unwrap();
                 }
             }
             IncomingMessage::AddPiece { piece } => {

@@ -1,18 +1,25 @@
-use std::sync::{
-    RwLock,
-    atomic::{self, AtomicBool},
+use std::{
+    sync::{
+        RwLock,
+        atomic::{self, AtomicBool, AtomicU64},
+    },
+    time::Instant,
 };
 
 use crate::data::{GameState, Piece, Placement};
 use ahash::HashMap;
+use bumpalo_herd::Herd;
 use enum_map::EnumMap;
 use enumset::EnumSet;
 use once_cell::sync::Lazy;
-use rand::{random, rng, seq::IteratorRandom};
+use ouroboros::self_referencing;
+use rand::{random, seq::IteratorRandom};
 
 pub struct DAG {
     root: GameState,
     top_layer: Box<Layer>,
+    last_advance: Instant,
+    new_nodes: AtomicU64,
 }
 
 pub struct Child {
@@ -38,8 +45,8 @@ pub struct Node {
 #[derive(Default)]
 pub struct Layer {
     piece: Option<Piece>, // For pieces outside of queue, will have to do some bag prediction
-    states: RwLock<HashMap<GameState, Node>>,
     next_layer: Lazy<Box<Layer>>,
+    states: RwLock<HashMap<GameState, Node>>,
 }
 
 pub struct Selection<'a> {
@@ -73,10 +80,20 @@ impl DAG {
         Self {
             root,
             top_layer: Box::new(top_layer),
+            last_advance: Instant::now(),
+            new_nodes: AtomicU64::new(0),
         }
     }
 
     pub fn advance_root(&mut self, mv: Placement) {
+        puffin::profile_function!();
+        let now = Instant::now();
+        eprintln!(
+            "{:.0} nodes/second",
+            *self.new_nodes.get_mut() as f64 / now.duration_since(self.last_advance).as_secs_f64()
+        );
+        self.last_advance = now;
+        *self.new_nodes.get_mut() = 0;
         let top_layer = std::mem::take(&mut *self.top_layer);
         self.root.advance(
             top_layer.piece.expect("cannot advance without next piece"),
@@ -95,9 +112,45 @@ impl DAG {
                 children: None,
                 expanding: AtomicBool::new(false),
             });
+        self.prune_unreachable();
+    }
+    fn prune_unreachable(&mut self) {
+        let mut layer = self.top_layer.as_mut();
+        let mut reachable = ahash::HashSet::default();
+        reachable.insert(self.root);
+
+        // Process top layer
+        let states = layer.states.get_mut().unwrap();
+        states.retain(|&k, _| k == self.root);
+        if let Some(root_node) = states.get_mut(&self.root) {
+            root_node.prev.clear();
+        }
+
+        // Process subsequent layers
+        while let Some(next_layer) = once_cell::sync::Lazy::get_mut(&mut layer.next_layer) {
+            layer = next_layer.as_mut();
+            let mut next_reachable = ahash::HashSet::default();
+            
+            let states = layer.states.get_mut().unwrap();
+            states.retain(|k, node| {
+                node.prev.retain(|(parent_state, _)| reachable.contains(parent_state));
+                if node.prev.is_empty() {
+                    false
+                } else {
+                    next_reachable.insert(*k);
+                    true
+                }
+            });
+
+            if next_reachable.is_empty() {
+                break;
+            }
+            reachable = next_reachable;
+        }
     }
 
     pub fn add_piece(&mut self, piece: Piece) {
+        puffin::profile_function!();
         let mut layer = &mut self.top_layer;
         loop {
             if layer.piece.is_none() {
@@ -109,6 +162,7 @@ impl DAG {
     }
 
     pub fn suggest(&self) -> Vec<Placement> {
+        puffin::profile_function!();
         let states = self.top_layer.states.read().unwrap();
         let children = match &states.get(&self.root).unwrap().children {
             Some(c) => c,
@@ -139,7 +193,8 @@ impl DAG {
         return candidates.into_iter().map(|c| c.placement).collect();
     }
 
-    pub fn select(&self) -> Option<Selection> {
+    pub fn select(&self) -> Option<Selection<'_>> {
+        puffin::profile_function!();
         let mut layers = vec![&*self.top_layer]; // queue for backpropagation
         let mut game_state = self.root;
         loop {
@@ -177,6 +232,8 @@ impl DAG {
                 return None;
             }
             let i = ((-s.ln() / EXPLORATION) % len as f32) as usize;
+            self.new_nodes
+                .fetch_add(1 as u64, atomic::Ordering::Relaxed);
 
             let choice = children[next_piece].get(i).unwrap().placement;
 
@@ -193,6 +250,7 @@ impl<'a> Selection<'_> {
     }
     // contains expansion, simulation, and backpropagation.
     pub fn expand(self, children: EnumMap<Piece, Vec<ChildData>>) {
+        puffin::profile_function!();
         let mut layers = self.layers;
         let cur_layer = layers.pop().unwrap();
 
@@ -201,7 +259,7 @@ impl<'a> Selection<'_> {
 
         let mut next_states = cur_layer.next_layer.states.write().unwrap();
         // generate children
-        for (piece, piece_children) in children {
+        for (_, piece_children) in children {
             for child in piece_children {
                 let child_node = next_states.entry(child.state).or_insert(Node {
                     prev: vec![],
@@ -228,13 +286,13 @@ impl<'a> Selection<'_> {
         let mut states = cur_layer.states.write().unwrap();
         let node = states.get_mut(&self.game_state).unwrap();
 
-        node.children = Some(childs); // SAVE the children!
+        node.children = Some(childs);
 
         for (prior_state, mv) in node.prev.iter() {
             priors.push((*prior_state, *mv, self.game_state))
         }
 
-        drop(states); // FIX DEADLOCK!
+        drop(states);
         drop(next_states);
 
         let mut prior_layer = cur_layer;
