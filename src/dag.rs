@@ -130,10 +130,11 @@ impl DAG {
         while let Some(next_layer) = once_cell::sync::Lazy::get_mut(&mut layer.next_layer) {
             layer = next_layer.as_mut();
             let mut next_reachable = ahash::HashSet::default();
-            
+
             let states = layer.states.get_mut().unwrap();
             states.retain(|k, node| {
-                node.prev.retain(|(parent_state, _)| reachable.contains(parent_state));
+                node.prev
+                    .retain(|(parent_state, _)| reachable.contains(parent_state));
                 if node.prev.is_empty() {
                     false
                 } else {
@@ -257,6 +258,8 @@ impl<'a> Selection<'_> {
         // create child nodes
         let mut childs = EnumMap::<_, Vec<_>>::default();
 
+        // lock parents before child to prevent deadlock
+        let mut states = cur_layer.states.write().unwrap();
         let mut next_states = cur_layer.next_layer.states.write().unwrap();
         // generate children
         for (_, piece_children) in children {
@@ -283,7 +286,6 @@ impl<'a> Selection<'_> {
 
         let mut priors = vec![];
 
-        let mut states = cur_layer.states.write().unwrap();
         let node = states.get_mut(&self.game_state).unwrap();
 
         node.children = Some(childs);
@@ -292,8 +294,8 @@ impl<'a> Selection<'_> {
             priors.push((*prior_state, *mv, self.game_state))
         }
 
-        drop(states);
         drop(next_states);
+        drop(states);
 
         let mut prior_layer = cur_layer;
         while let Some(layer) = layers.pop() {

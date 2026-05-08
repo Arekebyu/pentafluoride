@@ -126,10 +126,13 @@ pub async fn run(
 }
 
 fn spawn_workers(bot: &Arc<SharedState<Bot>>) {
-    let bot = bot.clone();
-    std::thread::spawn(move || {
-        loop {
-            bot.read_op(|bot| bot.expand());
-        }
-    });
+    let num_threads = 1;
+    for _ in 0..num_threads {
+        let bot = bot.clone();
+        std::thread::spawn(move || {
+            loop {
+                bot.read_op(|bot| bot.expand());
+            }
+        });
+    }
 }
