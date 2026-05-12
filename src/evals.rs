@@ -61,7 +61,7 @@ pub fn evaluate(
     if state.b2b > 0 {
         eval += weights.has_b2b;
         if state.b2b > 4 {
-            eval += weights.surge_preference // 
+            eval += weights.surge_increment // 
         }
     }
     reward += weights.softdrop * softdrop as f32;
