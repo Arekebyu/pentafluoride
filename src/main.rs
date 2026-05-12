@@ -1,10 +1,12 @@
+use std::{fs::File, io::BufReader, path::PathBuf, sync::Arc};
+
 use enumset::EnumSet;
 
 use crate::data::*;
 #[macro_use]
 mod data;
 mod movegen;
-use pentafluoride::interface::run;
+use pentafluoride::{evals, interface::run};
 
 fn main() {
     puffin::set_scopes_on(true);
@@ -24,9 +26,14 @@ fn main() {
         std::io::stdout().flush().unwrap();
         async { Ok(()) }
     });
+    let path = PathBuf::from("../src/default.json");
+    let weights = {
+        let f = BufReader::new(File::open(path).unwrap());
+        Arc::new(serde_json::from_reader(f).unwrap())
+    };
 
     futures::pin_mut!(incoming);
     futures::pin_mut!(outgoing);
 
-    futures::executor::block_on(run(incoming, outgoing));
+    futures::executor::block_on(run(incoming, outgoing, weights));
 }

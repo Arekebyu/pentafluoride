@@ -1,21 +1,30 @@
 use std::process::Child;
+use std::sync::Arc;
 
 use enum_map::EnumMap;
 use enumset::EnumSet;
+use rand::distr::weighted::Weight;
 
 use crate::dag::{ChildData, DAG};
 use crate::data::*;
+use crate::evals::{Weights, evaluate};
 
 use crate::movegen::find_moves;
 
 pub struct Bot {
     dag: DAG,
+    weights: Arc<Weights>,
 }
 
 impl Bot {
-    pub fn new(root: GameState, queue: impl IntoIterator<Item = Piece>) -> Self {
+    pub fn new(
+        root: GameState,
+        queue: impl IntoIterator<Item = Piece>,
+        weights: Arc<Weights>,
+    ) -> Self {
         Self {
             dag: DAG::new(root, queue),
+            weights,
         }
     }
 
@@ -57,17 +66,17 @@ impl Bot {
                         moves[state.hold].iter()
                     }
                 });
-                for &(mv, _) in moves {
+                for &(mv, sd) in moves {
                     let mut new_state = state;
                     let info = new_state.advance(piece, mv);
 
-                    let (reward) = calculate_reward(&info);
+                    let (eval, reward) = evaluate(&self.weights, new_state, &info, sd);
 
                     children[piece].push(ChildData {
                         state: new_state,
                         mv,
                         reward,
-                        eval: 0.0,
+                        eval,
                     })
                 }
             }

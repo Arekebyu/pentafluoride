@@ -3,9 +3,9 @@ use futures::prelude::*;
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use crate::bot::Bot;
 use crate::data::*;
 use crate::sharing::SharedState;
+use crate::{bot::Bot, evals::Weights};
 
 use serde::{Deserialize, Serialize};
 
@@ -45,6 +45,7 @@ impl From<[[Option<char>; 10]; 40]> for Board {
 pub async fn run(
     mut incoming: impl Stream<Item = IncomingMessage> + Unpin,
     mut outgoing: impl Sink<OutgoingMessage, Error = Infallible> + Unpin,
+    cfgs: Arc<Weights>,
 ) {
     outgoing.send(OutgoingMessage::Ready).await.unwrap();
 
@@ -73,6 +74,7 @@ pub async fn run(
                             bag: EnumSet::all() - hold,
                         },
                         queue,
+                        cfgs.clone(),
                     )),
                     None => {
                         bot.stop();
@@ -112,6 +114,7 @@ pub async fn run(
                             bag: EnumSet::all() - piece,
                         },
                         std::iter::empty(),
+                        cfgs.clone(),
                     ));
                 } else {
                     bot.write_op_if_exists(|bot| bot.add_piece(piece));

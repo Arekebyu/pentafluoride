@@ -114,6 +114,7 @@ impl DAG {
             });
         self.prune_unreachable();
     }
+
     fn prune_unreachable(&mut self) {
         let mut layer = self.top_layer.as_mut();
         let mut reachable = ahash::HashSet::default();
